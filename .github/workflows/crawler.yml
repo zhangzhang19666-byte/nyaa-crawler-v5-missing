@@ -17,86 +17,44 @@ jobs:
       cancel-in-progress: false
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install curl_cffi beautifulsoup4 requests
+      - run: pip install curl_cffi beautifulsoup4 requests
 
-      - name: Check remaining IDs
-        id: check
+      - id: check
         run: |
-          HAS_MISSING=$(python -c "
-import json, glob
-prog = {}
-try:
-  prog = json.load(open('v5_progress.json'))
-except: pass
-for f in sorted(glob.glob('missing_*.txt')):
-  dispatched = prog.get(f.split('/')[-1], 0)
-  total = len([l for l in open(f) if l.strip().isdigit()])
-  if dispatched < total:
-    print('true')
-    exit(0)
-print('false')
-")
-          echo "has_missing=$HAS_MISSING" >> $GITHUB_OUTPUT
+          echo "has_missing=$(python3 check_remaining.py)" >> $GITHUB_OUTPUT
 
-      - name: Run V5 Missing-ID Crawler (1100 per batch)
-        if: steps.check.outputs.has_missing == 'true'
+      - if: steps.check.outputs.has_missing == 'true'
         run: |
-          echo "Starting V5 missing-ID crawler batch (1100 IDs)..."
-          python v5_nyaa_missing_crawler.py \
+          python3 v5_nyaa_missing_crawler.py \
             --missing-dir=. \
             --workers=5 \
             --batch-size=1100 \
             --batch-timeout=540
 
-      - name: Commit and Push results
-        if: steps.check.outputs.has_missing == 'true'
+      - if: steps.check.outputs.has_missing == 'true'
         run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
+          git config user.email "bot@users.noreply.github.com"
+          git config user.name "bot"
           git add v5_progress.json nyaa_v5_missing_*.jsonl || true
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "Auto-update: V5 missing-ID progress and results"
-            git push
-          fi
+          git diff --staged --quiet || git commit -m "auto: v5 progress"
+          git push
 
-      - name: Trigger next run
-        if: steps.check.outputs.has_missing == 'true'
+      - if: steps.check.outputs.has_missing == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ALL_DONE=$(python -c "
-import json, glob
-prog = {}
-try:
-  prog = json.load(open('v5_progress.json'))
-except: pass
-for f in sorted(glob.glob('missing_*.txt')):
-  dispatched = prog.get(f.split('/')[-1], 0)
-  total = len([l for l in open(f) if l.strip().isdigit()])
-  if dispatched < total:
-    print('false')
-    exit(0)
-print('true')
-")
-          if [ "$ALL_DONE" = "true" ]; then
-            echo "All missing IDs consumed. Stopping loop."
+          if [ "$(python3 check_remaining.py)" = "false" ]; then
+            echo "All done. Loop stops."
             exit 0
           fi
-          echo "Waiting 60 seconds before triggering next run..."
+          echo "Next in 60s..."
           sleep 60
           gh workflow run "V5 Missing-ID Crawler Loop" --ref main

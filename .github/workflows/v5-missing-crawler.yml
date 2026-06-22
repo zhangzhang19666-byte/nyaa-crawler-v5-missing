@@ -1,0 +1,136 @@
+name: V5 Missing-ID Crawler Loop
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/10 * * * *'  # 每10分钟触发一次兜底
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: v5-crawler-loop
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install curl_cffi beautifulsoup4 requests
+
+      - name: Check if missing IDs remain
+        id: check
+        run: |
+          if ls missing_*.txt 2>/dev/null | head -1; then
+            # 检查是否所有文件都已消费完
+            python -c "
+import json
+from pathlib import Path
+pfile = 'v5_progress.json'
+if Path(pfile).exists():
+    prog = json.load(open(pfile))
+else:
+    prog = {}
+all_consumed = True
+for f in sorted(Path('.').glob('missing_*.txt')):
+    fname = f.name
+    dispatched = prog.get(fname, 0)
+    with open(f) as fh:
+        total = len([l for l in fh if l.strip().isdigit()])
+    if dispatched < total:
+        all_consumed = False
+        print(f'{fname}: {dispatched}/{total} done')
+    else:
+        print(f'{fname}: ✅ ALL DONE ({dispatched}/{total})')
+if all_consumed:
+    print('ALL_CONSUMED=true')
+else:
+    print('ALL_CONSUMED=false')
+"
+            HAS_MISSING=$(python -c "
+import json
+from pathlib import Path
+p = 'v5_progress.json'
+prog = json.load(open(p)) if Path(p).exists() else {}
+for f in sorted(Path('.').glob('missing_*.txt')):
+    dispatched = prog.get(f.name, 0)
+    total = len([l for l in open(f) if l.strip().isdigit()])
+    if dispatched < total:
+        print('true')
+        exit(0)
+print('false')
+")
+            echo "has_missing=$HAS_MISSING" >> $GITHUB_OUTPUT
+          else:
+            echo "has_missing=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run V5 Missing-ID Crawler
+        if: steps.check.outputs.has_missing == 'true'
+        env:
+          PROXY_URL: ${{ secrets.PROXY_URL }}
+        run: |
+          echo "Starting V5 missing-ID crawler batch..."
+          ARGS="--missing-dir=. --workers=5 --batch-size=355 --batch-timeout=540"
+          if [ -n "$PROXY_URL" ]; then
+            ARGS="$ARGS --proxy $PROXY_URL"
+          fi
+          python v5_nyaa_missing_crawler.py $ARGS
+          echo "Crawler finished."
+
+      - name: Commit and Push changes
+        if: steps.check.outputs.has_missing == 'true'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add v5_progress.json nyaa_v5_missing_*.jsonl || true
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Auto-update: V5 missing-ID crawler progress and results"
+            git push
+          fi
+
+      - name: Check if all done and trigger next
+        if: steps.check.outputs.has_missing == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 检查是否全部消费完
+          ALL_DONE=$(python -c "
+import json
+from pathlib import Path
+p = 'v5_progress.json'
+prog = json.load(open(p)) if Path(p).exists() else {}
+for f in sorted(Path('.').glob('missing_*.txt')):
+    dispatched = prog.get(f.name, 0)
+    total = len([l for l in open(f) if l.strip().isdigit()])
+    if dispatched < total:
+        print('false')
+        exit(0)
+print('true')
+")
+          if [ "$ALL_DONE" = "true" ]; then
+            echo "✅ All missing IDs consumed. Stopping loop."
+            exit 0
+          fi
+          
+          echo "Waiting 60 seconds before triggering next run..."
+          sleep 60
+          echo "Triggering next run..."
+          gh workflow run "V5 Missing-ID Crawler Loop" --ref main

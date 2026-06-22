@@ -37,7 +37,7 @@ jobs:
             --missing-dir=. \
             --workers=5 \
             --batch-size=1100 \
-            --batch-timeout=540
+            --batch-timeout=900
 
       - if: steps.check.outputs.has_missing == 'true'
         run: |

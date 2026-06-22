@@ -157,13 +157,12 @@ async def run_v5_missing_mode(missing_dir, workers, batch_size, batch_timeout,
     
     processed_count = 0
     found_count = 0
-    consecutive_errors = 0
     stop_flag = False
     q = asyncio.Queue()
     lock = asyncio.Lock()
     
     async def worker(session):
-        nonlocal processed_count, found_count, consecutive_errors, stop_flag
+        nonlocal processed_count, found_count, stop_flag
         while True:
             if stop_flag:
                 break
@@ -172,7 +171,28 @@ async def run_v5_missing_mode(missing_dir, workers, batch_size, batch_timeout,
                 q.task_done()
                 break
             
-            _, data, status_msg = await fetch_one(id_val, session, min_delay, max_delay)
+            # 每个ID最多重试3次，超时/连接断开 → 标记timeout不阻塞
+            data = None
+            status_msg = "unknown"
+            for attempt in range(3):
+                _, data, status_msg = await fetch_one(id_val, session, min_delay, max_delay)
+                if status_msg in ("ok", "404"):
+                    break
+                # 429 不重试（等下次再跑）
+                if status_msg == "429":
+                    break
+                # 超时/连接断开 → 重试
+                if ("timed out" in status_msg.lower()
+                        or "connection closed" in status_msg.lower()
+                        or "502" in status_msg
+                        or "504" in status_msg):
+                    if attempt < 2:
+                        print(f" [v5] ID {id_val} attempt {attempt+1}: {status_msg[:40]} → retry")
+                        await asyncio.sleep(2)
+                    else:
+                        status_msg = "timeout"
+                else:
+                    break  # 其他错误不重试
             
             async with lock:
                 processed_count += 1
@@ -182,14 +202,6 @@ async def run_v5_missing_mode(missing_dir, workers, batch_size, batch_timeout,
                     fh.write(json.dumps(data, ensure_ascii=False) + "\n")
                 else:
                     fh.write(json.dumps({"id": id_val, "status": status_msg}, ensure_ascii=False) + "\n")
-                
-                if status_msg not in ("ok", "404"):
-                    consecutive_errors += 1
-                    if consecutive_errors >= 5:
-                        print(f" [v5] ABORT: 5 consecutive errors")
-                        stop_flag = True
-                else:
-                    consecutive_errors = 0
                 
                 if processed_count % 50 == 0 or stop_flag:
                     fh.flush()

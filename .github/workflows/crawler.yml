@@ -42,7 +42,7 @@ print('false')
         env:
           PROXY_URL: ${{ secrets.PROXY_URL }}
         run: |
-          ARGS="--missing-dir=. --workers=5 --batch-size=355 --batch-timeout=540"
+          ARGS="--missing-dir=. --workers=5 --batch-size=1100 --batch-timeout=540"
           [ -n "$PROXY_URL" ] && ARGS="$ARGS --proxy $PROXY_URL"
           python v5_nyaa_missing_crawler.py $ARGS
       - if: steps.check.outputs.has_missing == 'true'

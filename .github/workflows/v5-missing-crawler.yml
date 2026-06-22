@@ -2,8 +2,9 @@ name: V5 Missing-ID Crawler Loop
 
 on:
   workflow_dispatch:
+    inputs: {}
   schedule:
-    - cron: '*/10 * * * *'  # 每10分钟触发一次兜底
+    - cron: '*/10 * * * *'
 
 permissions:
   contents: write
@@ -35,33 +36,7 @@ jobs:
       - name: Check if missing IDs remain
         id: check
         run: |
-          if ls missing_*.txt 2>/dev/null | head -1; then
-            # 检查是否所有文件都已消费完
-            python -c "
-import json
-from pathlib import Path
-pfile = 'v5_progress.json'
-if Path(pfile).exists():
-    prog = json.load(open(pfile))
-else:
-    prog = {}
-all_consumed = True
-for f in sorted(Path('.').glob('missing_*.txt')):
-    fname = f.name
-    dispatched = prog.get(fname, 0)
-    with open(f) as fh:
-        total = len([l for l in fh if l.strip().isdigit()])
-    if dispatched < total:
-        all_consumed = False
-        print(f'{fname}: {dispatched}/{total} done')
-    else:
-        print(f'{fname}: ✅ ALL DONE ({dispatched}/{total})')
-if all_consumed:
-    print('ALL_CONSUMED=true')
-else:
-    print('ALL_CONSUMED=false')
-"
-            HAS_MISSING=$(python -c "
+          HAS_MISSING=$(python -c "
 import json
 from pathlib import Path
 p = 'v5_progress.json'
@@ -74,10 +49,7 @@ for f in sorted(Path('.').glob('missing_*.txt')):
         exit(0)
 print('false')
 ")
-            echo "has_missing=$HAS_MISSING" >> $GITHUB_OUTPUT
-          else:
-            echo "has_missing=false" >> $GITHUB_OUTPUT
-          fi
+          echo "has_missing=$HAS_MISSING" >> $GITHUB_OUTPUT
 
       - name: Run V5 Missing-ID Crawler
         if: steps.check.outputs.has_missing == 'true'
@@ -111,7 +83,6 @@ print('false')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 检查是否全部消费完
           ALL_DONE=$(python -c "
 import json
 from pathlib import Path
@@ -126,11 +97,11 @@ for f in sorted(Path('.').glob('missing_*.txt')):
 print('true')
 ")
           if [ "$ALL_DONE" = "true" ]; then
-            echo "✅ All missing IDs consumed. Stopping loop."
+            echo "All missing IDs consumed. Stopping loop."
             exit 0
           fi
           
           echo "Waiting 60 seconds before triggering next run..."
           sleep 60
           echo "Triggering next run..."
-          gh workflow run "V5 Missing-ID Crawler Loop" --ref main
+          gh workflow run .github/workflows/v5-missing-crawler.yml --ref main

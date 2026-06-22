@@ -2,7 +2,6 @@ name: V5 Missing-ID Crawler Loop
 
 on:
   workflow_dispatch:
-    inputs: {}
   schedule:
     - cron: '*/10 * * * *'
 
@@ -33,75 +32,56 @@ jobs:
           python -m pip install --upgrade pip
           pip install curl_cffi beautifulsoup4 requests
 
-      - name: Check if missing IDs remain
+      - name: Check missing IDs
         id: check
         run: |
-          HAS_MISSING=$(python -c "
+          HAS=$(python -c "
 import json
 from pathlib import Path
 p = 'v5_progress.json'
 prog = json.load(open(p)) if Path(p).exists() else {}
 for f in sorted(Path('.').glob('missing_*.txt')):
-    dispatched = prog.get(f.name, 0)
-    total = len([l for l in open(f) if l.strip().isdigit()])
-    if dispatched < total:
-        print('true')
-        exit(0)
+    d = prog.get(f.name, 0)
+    t = len([l for l in open(f) if l.strip().isdigit()])
+    if d < t: print('true'); exit(0)
 print('false')
 ")
-          echo "has_missing=$HAS_MISSING" >> $GITHUB_OUTPUT
+          echo "has_missing=$HAS" >> $GITHUB_OUTPUT
 
-      - name: Run V5 Missing-ID Crawler
+      - name: Run Crawler
         if: steps.check.outputs.has_missing == 'true'
         env:
           PROXY_URL: ${{ secrets.PROXY_URL }}
         run: |
-          echo "Starting V5 missing-ID crawler batch..."
           ARGS="--missing-dir=. --workers=5 --batch-size=355 --batch-timeout=540"
-          if [ -n "$PROXY_URL" ]; then
-            ARGS="$ARGS --proxy $PROXY_URL"
-          fi
+          [ -n "$PROXY_URL" ] && ARGS="$ARGS --proxy $PROXY_URL"
           python v5_nyaa_missing_crawler.py $ARGS
-          echo "Crawler finished."
 
-      - name: Commit and Push changes
+      - name: Commit results
         if: steps.check.outputs.has_missing == 'true'
         run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
+          git config user.email "bot@users.noreply.github.com"
+          git config user.name "bot"
           git add v5_progress.json nyaa_v5_missing_*.jsonl || true
-          
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "Auto-update: V5 missing-ID crawler progress and results"
-            git push
-          fi
+          git diff --staged --quiet || git commit -m "auto: crawler progress"
+          git push
 
-      - name: Check if all done and trigger next
+      - name: Loop trigger
         if: steps.check.outputs.has_missing == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ALL_DONE=$(python -c "
+          ALL=$(python -c "
 import json
 from pathlib import Path
 p = 'v5_progress.json'
 prog = json.load(open(p)) if Path(p).exists() else {}
 for f in sorted(Path('.').glob('missing_*.txt')):
-    dispatched = prog.get(f.name, 0)
-    total = len([l for l in open(f) if l.strip().isdigit()])
-    if dispatched < total:
-        print('false')
-        exit(0)
+    d = prog.get(f.name, 0)
+    t = len([l for l in open(f) if l.strip().isdigit()])
+    if d < t: print('false'); exit(0)
 print('true')
 ")
-          if [ "$ALL_DONE" = "true" ]; then
-            echo "All missing IDs consumed. Stopping loop."
-            exit 0
-          fi
-          
-          echo "Waiting 60 seconds before triggering next run..."
+          [ "$ALL" = "true" ] && echo "Done" && exit 0
           sleep 60
-          echo "Triggering next run..."
           gh workflow run .github/workflows/v5-missing-crawler.yml --ref main
